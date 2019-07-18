@@ -5,18 +5,92 @@ from torch.autograd import Variable
 from collections import OrderedDict
 import numpy as np
 
+from models.imagenet.mobilenetv2 import mobilenetv2, InvertedResidual
 
-def summary(model, input_size, batch_size=-1, device="cuda"):
+from os import path
+
+
+def summary(model, input_size, batch_size=-1, device="cuda", q_bit=12, save_data=False, file_path='./'):
 
     def register_hook(module):
 
         def hook(module, input, output):
             class_name = str(module.__class__).split(".")[-1].split("'")[0]
-            module_idx = len(summary)
+            # module_idx = len(summary)
 
-            m_key = "%s-%i" % (class_name, module_idx + 1)
+            if isinstance(module, InvertedResidual):
+                block[0] += 1
+                if module.identity:
+                    m_key = "%s_Res_%i" % (class_name, block[0])
+                else:
+                    m_key = "%s_%i" % (class_name, block[0])
+            elif isinstance(module, nn.Conv2d):
+                if module.kernel_size[0] == 3:
+                    if module.groups > 1:  # It is a DW Conv
+                        conv3x3_dw_num[0] += 1
+                        m_key = "IR_%i_%s(3x3)_dw_%i" % (
+                            block[0]+1, class_name, conv3x3_dw_num[0])
+                    else:
+                        conv3x3_norm_num[0] += 1
+                        m_key = "%s(3x3)_%i" % (class_name,
+                                                conv3x3_norm_num[0])
+                elif module.kernel_size[0] == 1:
+                    conv1x1_num[0] += 1
+                    # Make sure it is not the last conv.
+                    if output.size()[0] != 1280:
+                        m_key = "IR_%i_%s(1x1)_%i" % (block[0]+1,
+                                                      class_name, conv1x1_num[0])
+                    else:
+                        m_key = "%s(1x1)_%i" % (class_name, conv1x1_num[0])
+            else:
+                ReLU[0] += 1
+                m_key = "%s_%i" % (class_name, ReLU[0])
+
+            if save_data[0]:
+                if isinstance(module, InvertedResidual) or isinstance(module, nn.Conv2d) or isinstance(module, nn.AdaptiveAvgPool2d):
+                    np.save(
+                        path.join(file_path[0], m_key+"_output"), output.detach().cpu())
+                    np.save(
+                        path.join(file_path[0], m_key+"_input"), input[0].detach().cpu())
+                if isinstance(module, nn.Conv2d):
+                    np.save(
+                        path.join(file_path[0], m_key+'_weights'), module.weight.detach().cpu())
+                    np.save(
+                        path.join(file_path[0], m_key+'_bias'), module.bias.detach().cpu())
+
+            if isinstance(module, nn.Conv2d):
+                max_min_weight[0] = max(
+                    max_min_weight[0], module.weight.detach().cpu().max())
+                
+                max_min_weight[1] = min(
+                    max_min_weight[1], module.weight.detach().cpu().min())
+                
+                max_min_bias[0] = max(
+                    max_min_bias[0], module.weight.detach().cpu().max())
+                
+                max_min_bias[1] = min(
+                    max_min_bias[1], module.bias.detach().cpu().min())
+
+            input_buf_size = np.prod(input[0].size())
+            output_buf_size = np.prod(output.size())
+
+            if input_buf_size > output_buf_size:
+                if max_buf_size_mb[0] < input_buf_size:
+                    max_buf_size_mb[0] = input_buf_size
+                    for i in range(3):
+                        max_buf_size_value[i] = max(
+                            max_buf_size_value[i], input[0].size()[i+1])
+            else:
+                if max_buf_size_mb[0] < output_buf_size:
+                    max_buf_size_mb[0] = output_buf_size
+                    for i in range(3):
+                        max_buf_size_value[i] = max(
+                            max_buf_size_value[i], output.size()[i+1])
+
+            # m_key = "%s-%i" % (class_name, module_idx + 1)
             summary[m_key] = OrderedDict()
             summary[m_key]["input_shape"] = list(input[0].size())
+            summary[m_key]["max_input_shape"] = list(input[0].size())
             summary[m_key]["input_shape"][0] = batch_size
             if isinstance(output, (list, tuple)):
                 summary[m_key]["output_shape"] = [
@@ -62,6 +136,21 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
 
     # create properties
     summary = OrderedDict()
+
+    max_buf_size_value = list([float('-Inf'), float('-Inf'), float('-Inf')])
+    max_buf_size_mb = list([float('-Inf')])
+
+    save_data = list([save_data])
+    file_path = list([file_path])
+
+    conv1x1_num = list([0])
+    conv3x3_norm_num = list([0])
+    conv3x3_dw_num = list([0])
+    ReLU = list([0])
+    block = list([-1])
+    max_min_weight = list([float('-Inf'), float('+Inf')])
+    max_min_bias = list([float('-Inf'), float('+Inf')])
+
     hooks = []
 
     # register hook
@@ -76,7 +165,8 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
         h.remove()
 
     print("----------------------------------------------------------------")
-    line_new = "{:>20}  {:>25} {:>15}".format("Layer (type)", "Output Shape", "Param #")
+    line_new = "{:>25}  {:>25} {:>15}".format(
+        "Layer (type)", "Output Shape", "Param #")
     print(line_new)
     print("================================================================")
     total_params = 0
@@ -84,7 +174,7 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
     trainable_params = 0
     for layer in summary:
         # input_shape, output_shape, trainable, nb_params
-        line_new = "{:>20}  {:>25} {:>15}".format(
+        line_new = "{:>25}  {:>25} {:>15}".format(
             layer,
             str(summary[layer]["output_shape"]),
             "{0:,}".format(summary[layer]["nb_params"]),
@@ -97,19 +187,26 @@ def summary(model, input_size, batch_size=-1, device="cuda"):
         print(line_new)
 
     # assume 4 bytes/number (float on cuda).
-    total_input_size = abs(np.prod(input_size) * batch_size * 4. / (1024 ** 2.))
-    total_output_size = abs(2. * total_output * 4. / (1024 ** 2.))  # x2 for gradients
+    total_input_size = abs(np.prod(input_size) *
+                           batch_size * 4. / (1024 ** 2.))
+    total_output_size = abs(2. * total_output * 4. /
+                            (1024 ** 2.))  # x2 for gradients
     total_params_size = abs(total_params.numpy() * 4. / (1024 ** 2.))
     total_size = total_params_size + total_output_size + total_input_size
 
     print("================================================================")
     print("Total params: {0:,}".format(total_params))
     print("Trainable params: {0:,}".format(trainable_params))
-    print("Non-trainable params: {0:,}".format(total_params - trainable_params))
+    print(
+        "Non-trainable params: {0:,}".format(total_params - trainable_params))
     print("----------------------------------------------------------------")
     print("Input size (MB): %0.2f" % total_input_size)
     print("Forward/backward pass size (MB): %0.2f" % total_output_size)
     print("Params size (MB): %0.2f" % total_params_size)
     print("Estimated Total Size (MB): %0.2f" % total_size)
+    print("Max Buf Size: %s, %i cells, %.2f(Mb) " % (str(max_buf_size_value),
+                                                     np.prod(max_buf_size_value), max_buf_size_mb[0]*q_bit/(1024*1024)))
+    print("Weight range: %s" % (str(max_min_weight)))
+    print("Bias range: %s" % (str(max_min_bias)))
     print("----------------------------------------------------------------")
     # return summary
