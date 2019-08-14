@@ -51,6 +51,11 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
                 m_key = "%s_%i" % (state, block[0])
 
             elif isinstance(module, nn.Conv2d):
+                i_c_size = input[0].size()[1]
+                i_h_size = input[0].size()[2]
+                o_c_size = output.size()[1]
+                o_h_size = output.size()[2]
+                specs.append([i_c_size, i_h_size, o_c_size, o_h_size])
                 if module.kernel_size[0] == 3:
                     if module.groups > 1:  # It is a DW Conv
                         conv3x3_dw_num[0] += 1
@@ -128,8 +133,8 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
                 int_bit_val['int_w_weight'].append(int_bit)
                 int_bit_val['int_w_bias'].append(b_int_bit)
 
-            input_buf_size = np.prod(input[0].size())
-            output_buf_size = np.prod(output.size())
+            input_buf_size = np.prod(input[0].size()[1:])
+            output_buf_size = np.prod(output.size()[1:])
 
             if input_buf_size > output_buf_size:
                 if max_buf_size_mb[0] < input_buf_size:
@@ -210,6 +215,8 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
     int_bit_val = OrderedDict()
     int_bit_val['int_w_bias'] = list()
     int_bit_val['int_w_weight'] = list()
+    
+    specs = list()
 
     hooks = []
 
@@ -298,4 +305,5 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
     for state in IR[0]:
         print(state)
     save_q_bit_rule(model, int_bit_val, file_path[0], w_q_bit, b_q_bit)
-    # return summary
+
+    return max_buf_size_value, specs
