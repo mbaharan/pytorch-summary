@@ -55,17 +55,23 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
                 i_h_size = input[0].size()[2]
                 o_c_size = output.size()[1]
                 o_h_size = output.size()[2]
-                specs.append([i_c_size, i_h_size, o_c_size, o_h_size])
+                k_size = module.kernel_size[0]
+                st_size = module.stride[0]
+                p_size = module.padding[0]
+                specs.append([i_c_size, i_h_size, o_c_size, o_h_size, k_size, st_size, p_size])
                 if module.kernel_size[0] == 3:
                     if module.groups > 1:  # It is a DW Conv
                         conv3x3_dw_num[0] += 1
                         m_key = "IR_%i_%s(3x3)_dw_%i" % (
                             block[0]+1, class_name, conv3x3_dw_num[0])
+                        max_in_chan_dw[0] = max(max_in_chan_dw[0], i_c_size)
                     else:
                         conv3x3_norm_num[0] += 1
                         m_key = "%s(3x3)_%i" % (class_name,
                                                 conv3x3_norm_num[0])
+                        max_in_chan_cnn[0] = max(max_in_chan_cnn[0], i_c_size)
                 elif module.kernel_size[0] == 1:
+                    max_in_chan_pw[0] = max(max_in_chan_pw[0], i_c_size)
                     conv1x1_num[0] += 1
                     # Make sure it is not the last conv.
                     if output.size()[0] != 1280:
@@ -215,6 +221,10 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
     int_bit_val = OrderedDict()
     int_bit_val['int_w_bias'] = list()
     int_bit_val['int_w_weight'] = list()
+
+    max_in_chan_pw = list([float('-Inf')])
+    max_in_chan_dw = list([float('-Inf')])
+    max_in_chan_cnn = list([float('-Inf')])
     
     specs = list()
 
@@ -306,4 +316,4 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
         print(state)
     save_q_bit_rule(model, int_bit_val, file_path[0], w_q_bit, b_q_bit)
 
-    return max_buf_size_value, specs
+    return max_buf_size_value, specs, [max_in_chan_cnn[0], max_in_chan_dw[0], max_in_chan_pw[0]]
