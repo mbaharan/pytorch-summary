@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
+import torchvision.transforms as transforms
+from PIL import Image
 
 from collections import OrderedDict
 import numpy as np
 
 from models.imagenet.mobilenetv2 import mobilenetv2, InvertedResidual
+from utils import imagenet1000_clsidx_to_labels as lables
 
 from os import path
 import math
@@ -29,7 +32,7 @@ def save_q_bit_rule(model, bit_list, file_path, w_bit_width, b_bit_width):
     print('Rule has been saved in {}.'.format(file_name))
 
 
-def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit=8, save_data=False, file_path='./'):
+def summary(model, image_file, input_size=192, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit=8, save_data=False, file_path='./'):
 
     def register_hook(module):
 
@@ -58,7 +61,8 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
                 k_size = module.kernel_size[0]
                 st_size = module.stride[0]
                 p_size = module.padding[0]
-                specs.append([i_c_size, i_h_size, o_c_size, o_h_size, k_size, st_size, p_size])
+                specs.append([i_c_size, i_h_size, o_c_size,
+                              o_h_size, k_size, st_size, p_size])
                 if module.kernel_size[0] == 3:
                     if module.groups > 1:  # It is a DW Conv
                         conv3x3_dw_num[0] += 1
@@ -113,10 +117,9 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
                 summary[m_key]["weight_range"] = [min_v.item(), max_v.item()]
                 summary[m_key]["bias_range"] = [b_min_v.item(), b_max_v.item()]
                 summary[m_key]["spr_w"] = (1-(float(np.count_nonzero(w)) /
-                                            np.prod(w.size())))*100
+                                              np.prod(w.size())))*100
                 summary[m_key]["spr_b"] = (1-(float(np.count_nonzero(b)) /
-                                            np.prod(b.size())))*100
-
+                                              np.prod(b.size())))*100
 
                 int_bit = math.ceil(math.log2(max(abs(min_v), abs(max_v))))
                 b_int_bit = math.ceil(
@@ -198,8 +201,25 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
         input_size = [input_size]
 
     # batch_size of 2 for batchnorm
-    x = [torch.rand(2, *in_size).type(dtype) for in_size in input_size]
+    # x = [torch.rand(2, *in_size).type(dtype) for in_size in input_size]
     # print(type(x[0]))
+    # NOTE: Let's open a predefined file since I want to save input and output as golden model
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    transform_it = transforms.Compose([
+        transforms.Resize(input_size),
+        transforms.CenterCrop(input_size),
+        transforms.ToTensor(),
+        normalize,
+    ])
+
+    image = Image.open(image_file)
+
+    x = transform_it(image).type(dtype)
+    x = x.unsqueeze(0)
+
+    calc_confidence = torch.nn.functional.softmax
 
     # create properties
     summary = OrderedDict()
@@ -225,7 +245,7 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
     max_in_chan_pw = list([float('-Inf')])
     max_in_chan_dw = list([float('-Inf')])
     max_in_chan_cnn = list([float('-Inf')])
-    
+
     specs = list()
 
     hooks = []
@@ -235,7 +255,15 @@ def summary(model, input_size, batch_size=-1, device="cuda", w_q_bit=12, b_q_bit
 
     # make a forward pass
     # print(x.shape)
-    model(*x)
+    y = model(x)
+    y = y.view(-1, 1000)
+
+    conf = calc_confidence(y)
+    top5_val, top5_idx = conf.topk(5)
+    top5_idx = top5_idx.cpu().numpy()
+    for idx, conf_ in zip(top5_idx[0], top5_val[0]):
+        print('{}: {:2f}%'.format(lables.cls_idx[idx], conf_*100))
+
 
     # remove these hooks
     for h in hooks:
