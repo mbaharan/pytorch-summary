@@ -366,6 +366,6 @@ def summary(model,
     print("IR States:")
     for state in IR[0]:
         print(state)
-    save_q_bit_rule(model, int_bit_val, file_path[0], w_q_bit, b_q_bit)
+    save_q_bit_rule(model, int_bit_val, file_path[0], w_q_bit, b_q_bit) 
 
     return max_buf_size_value, specs, [max_in_chan[0], max_out_size[0], max_acc_buf_size[0]] 
